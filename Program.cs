@@ -14,6 +14,13 @@ namespace USBService
         /// </summary>
         static void Main()
         {
+           
+
+            if (!System.Diagnostics.EventLog.SourceExists("USBService"))
+            {
+                System.Diagnostics.EventLog.CreateEventSource("USBService", "Application");
+            }
+
             ServiceBase[] ServicesToRun;
             ServicesToRun = new ServiceBase[]
             {

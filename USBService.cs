@@ -5,6 +5,7 @@ using System.Management;
 using Microsoft.Win32;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
+using System.Diagnostics;
 
 namespace USBService
 {
@@ -263,6 +264,9 @@ namespace USBService
                     {
                         DisableUsbStorageDevices();
                         Console.WriteLine("USB storage devices disabled.");
+
+                        // Log the unauthorized USB detection event to the Windows Event Viewer
+                        LogUnauthorizedUsbEvent(deviceId);
                     }
                     else
                     {
@@ -282,6 +286,32 @@ namespace USBService
             catch (Exception ex)
             {
                 Console.WriteLine("Error while handling USB device event: " + ex.Message);
+            }
+        }
+
+        // Method to log the unauthorized USB detection event to the Windows Event Viewer
+        private void LogUnauthorizedUsbEvent(string deviceId)
+        {
+            string eventSource = "USBService";
+            string eventLog = "Application";
+            string logMessage = "Unauthorized USB device detected. Device ID: " + deviceId;
+
+            try
+            {
+                if (!EventLog.SourceExists(eventSource))
+                {
+                    EventLog.CreateEventSource(eventSource, eventLog);
+                }
+
+                using (EventLog eventLogInstance = new EventLog(eventLog))
+                {
+                    eventLogInstance.Source = eventSource;
+                    eventLogInstance.WriteEntry(logMessage, EventLogEntryType.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error while logging event to the Windows Event Viewer: " + ex.Message);
             }
         }
 
