@@ -16,16 +16,17 @@ namespace USBService
         // Constants for DIF_PROPERTYCHANGE and DICS_PROPCHANGE
         private const uint DIF_PROPERTYCHANGE = 0x00000012;
 
+        // USB event watcher
+        private ManagementEventWatcher watcher;
+
         public USBService()
         {
             InitializeComponent();
+            this.ServiceName = "USBService"; // Set the correct service name
         }
 
         protected override void OnStart(string[] args)
-        {
-            // Start the USB detection and access control logic
-            StartUsbDetection();
-
+        { 
             // Register for registry change events to automatically update Device Manager
             RegisterRegistryChangeEvents();
 
@@ -33,33 +34,24 @@ namespace USBService
             RegisterUsbEventWatcher();
         }
 
-        // Method to start USB device detection and access control
-        public static void StartUsbDetection()
+        protected override void OnStop()
         {
-            // Implement USB device detection and get the device ID
-            string deviceId = GetUsbDeviceId();
+            // Stop the USB detection and access control logic
+            StopUsbDetection();
 
-            if (!string.IsNullOrEmpty(deviceId))
-            {
-                bool deviceFound = CheckDeviceInDatabase(deviceId);
-                if (!deviceFound)
-                {
-                    DisableUsbStorageDevices();
-                    Console.WriteLine("USB storage devices disabled.");
-                }
-                else
-                {
-                    EnableUsbStorageDevices();
-                    Console.WriteLine("USB storage devices enabled.");
-                    // Allow the USB device to access the PC (not implemented here)
-                    Console.WriteLine("USB device allowed to access the PC.");
-                }
-
-                // Trigger the USB controller rescan with the provided device instance path
-                TriggerUsbControllerRescan(deviceId);
-            }
+            // Unregister the USB event watcher
+            UnregisterUsbEventWatcher();
         }
+        #region USB Detection and Access Control
 
+        
+        // Method to stop USB device detection and access control
+        private static void StopUsbDetection()
+        {
+            // Stop USB device detection and access control logic
+            // You can add any additional cleanup logic here if needed
+            Console.WriteLine("USB detection and access control logic stopped.");
+        }
 
         // Method to get the USB mass storage device ID and instance path
         public static string GetUsbDeviceId()
@@ -164,38 +156,6 @@ namespace USBService
             }
         }
 
-        // Method to refresh the Device Manager
-        private static void RefreshDeviceManager()
-        {
-            try
-            {
-                // Create an empty DeviceInfoData structure
-                SP_DEVINFO_DATA devInfoData = new SP_DEVINFO_DATA();
-                devInfoData.cbSize = (uint)Marshal.SizeOf(devInfoData);
-
-                // Call the SetupDiCallClassInstaller function with DIF_PROPERTYCHANGE to refresh the Device Manager
-                SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, IntPtr.Zero, ref devInfoData);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error while refreshing the Device Manager: " + ex.Message);
-            }
-        }
-
-        // P/Invoke declaration for SetupDiCallClassInstaller function
-        [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        public static extern bool SetupDiCallClassInstaller(uint InstallFunction, IntPtr DeviceInfoSet, ref SP_DEVINFO_DATA DeviceInfoData);
-
-        // Struct for SP_DEVINFO_DATA required for the SetupDiCallClassInstaller function
-        [StructLayout(LayoutKind.Sequential)]
-        public struct SP_DEVINFO_DATA
-        {
-            public uint cbSize;
-            public Guid ClassGuid;
-            public uint DevInst;
-            public IntPtr Reserved;
-        }
-
         // Method to trigger a USB controller rescan
         private static void TriggerUsbControllerRescan(string usbDeviceId)
         {
@@ -230,14 +190,18 @@ namespace USBService
             }
         }
 
+        #endregion
+
+        #region USB Event Watcher
+
         // Method to register the USB event watcher
-        public static void RegisterUsbEventWatcher()
+        public void RegisterUsbEventWatcher()
         {
             try
             {
                 ManagementScope scope = new ManagementScope("root\\CIMV2");
                 var query = new WqlEventQuery("SELECT * FROM Win32_DeviceChangeEvent");
-                ManagementEventWatcher watcher = new ManagementEventWatcher(scope, query);
+                watcher = new ManagementEventWatcher(scope, query);
                 watcher.EventArrived += UsbEventArrived;
                 watcher.Start();
                 Console.WriteLine("USB event watcher registered.");
@@ -248,8 +212,22 @@ namespace USBService
             }
         }
 
+        // Method to unregister the USB event watcher
+        private void UnregisterUsbEventWatcher()
+        {
+            // Unregister the USB event watcher
+            if (watcher != null)
+            {
+                watcher.EventArrived -= UsbEventArrived; // Remove the event handler
+                watcher.Stop(); // Stop the watcher
+                watcher.Dispose();
+                watcher = null;
+                Console.WriteLine("USB event watcher unregistered.");
+            }
+        }
+
         // Method to handle the USB event arrival
-        public static void UsbEventArrived(object sender, EventArrivedEventArgs e)
+        public void UsbEventArrived(object sender, EventArrivedEventArgs e)
         {
             try
             {
@@ -272,15 +250,12 @@ namespace USBService
         }
 
         // Method to handle USB device events
-        public static void HandleUsbDeviceEvent(string deviceId, bool isConnected)
+        public void HandleUsbDeviceEvent(string deviceId, bool isConnected)
         {
             try
             {
                 if (isConnected)
                 {
-                    // Always trigger USB controller rescan
-                    TriggerUsbControllerRescan(deviceId);
-
                     // Check if the device is authorized in the database
                     bool deviceFound = CheckDeviceInDatabase(deviceId);
 
@@ -310,11 +285,17 @@ namespace USBService
             }
         }
 
+        #endregion
+
+        #region Registry Change Events
+
         // Method to register for registry change events
         public static void RegisterRegistryChangeEvents()
         {
             Microsoft.Win32.SystemEvents.UserPreferenceChanged += UsbStorageDevicesRegistryChanged;
+            Console.WriteLine("Registry change events registered.");
         }
+
 
         // Method to handle registry change event for USB storage devices
         private static void UsbStorageDevicesRegistryChanged(object sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
@@ -356,5 +337,25 @@ namespace USBService
                 Console.WriteLine("Error while handling USB storage devices registry change event: " + ex.Message);
             }
         }
+
+        #endregion
+
+        #region P/Invoke and Struct
+
+        // P/Invoke declaration for SetupDiCallClassInstaller function
+        [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern bool SetupDiCallClassInstaller(uint InstallFunction, IntPtr DeviceInfoSet, ref SP_DEVINFO_DATA DeviceInfoData);
+
+        // Struct for SP_DEVINFO_DATA required for the SetupDiCallClassInstaller function
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SP_DEVINFO_DATA
+        {
+            public uint cbSize;
+            public Guid ClassGuid;
+            public uint DevInst;
+            public IntPtr Reserved;
+        }
+
+        #endregion
     }
 }
