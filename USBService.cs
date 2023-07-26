@@ -14,6 +14,9 @@ namespace USBService
         // Connection string for the database
         const string ConnectionString = "Data Source=F1-LAPTOP-MPC\\SQLEXPRESS;Initial Catalog=USB;Integrated Security=True;";
 
+        // Counter to track the number of USB events
+        private static int eventCounter = 0;
+
         // Constants for DIF_PROPERTYCHANGE and DICS_PROPCHANGE
         private const uint DIF_PROPERTYCHANGE = 0x00000012;
 
@@ -227,11 +230,16 @@ namespace USBService
             }
         }
 
-        // Method to handle the USB event arrival
         public void UsbEventArrived(object sender, EventArrivedEventArgs e)
         {
             try
             {
+                // Increment the event counter
+                eventCounter++;
+
+                // Log a message when the method is called
+                Console.WriteLine($"UsbEventArrived method called. Event Counter: {eventCounter}");
+
                 PropertyData targetInstanceData = e.NewEvent.Properties["TargetInstance"];
                 if (targetInstanceData != null && targetInstanceData.Value is ManagementBaseObject targetInstance)
                 {
@@ -240,6 +248,9 @@ namespace USBService
 
                     if (!string.IsNullOrEmpty(deviceId))
                     {
+                        // Log the USB event details
+                        Console.WriteLine($"USB Event: DeviceID: {deviceId}, IsConnected: {isConnected}");
+
                         HandleUsbDeviceEvent(deviceId, isConnected);
                     }
                 }
@@ -249,6 +260,7 @@ namespace USBService
                 Console.WriteLine("Error while handling USB event: " + ex.Message);
             }
         }
+
 
         // Method to handle USB device events
         public void HandleUsbDeviceEvent(string deviceId, bool isConnected)
