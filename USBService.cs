@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Data.SqlClient;
 using System.Management;
 using System.Runtime.InteropServices;
@@ -13,7 +14,7 @@ namespace USBService
         private const string USBSTORKeyPath = @"SYSTEM\CurrentControlSet\Services\USBSTOR";
         private const string StartValueName = "Start";
         private const int DisableValue = 4; // 4 disables the USBSTOR service
-        private const string ConnectionString = "Data Source=F1-LAPTOP-MPC\\SQLEXPRESS;Initial Catalog=USB;Integrated Security=True;";
+        private const string ConnectionString = "Data Source=DESKTOP-3G61K1D\\SQLEXPRESS;Initial Catalog=USB;Integrated Security=True;";
         private const string AuthorizationQuery = "SELECT COUNT(*) FROM [USB].[dbo].[UsbDevices] WHERE DeviceID = @DeviceID";
         private bool shouldStopMonitoring = false; // Flag to indicate when to stop the USB event monitoring
 
@@ -22,7 +23,7 @@ namespace USBService
         private bool isUSBSTOREnabled = false; // Flag to track USBSTOR status
         private string lastConnectedDeviceId = string.Empty; // To track the last connected USB device
         private bool isConnected = false; // Class-level variable to track USB connection status
-
+        private HashSet<string> connectedDevices = new HashSet<string>();
         public USBService()
         {
             InitializeComponent();
@@ -158,15 +159,20 @@ namespace USBService
 
                     if (isConnected && deviceId != lastConnectedDeviceId)
                     {
+                        connectedDevices.Add(deviceId);
                         EnableUSBSTORIfAuthorized(deviceId);
                         lastConnectedDeviceId = deviceId; // Update the last connected device
                     }
                     else if (!isConnected)
                     {
+                        connectedDevices.Remove(lastConnectedDeviceId);
                         AlwaysDisableUSBSTOR();
+                        lastConnectedDeviceId = string.Empty; // Reset the last connected device
                     }
 
-                    RefreshRegistryEditor();
+                    isConnected = connectedDevices.Count > 0;
+                
+                RefreshRegistryEditor();
                 }
             }
             catch (Exception ex)
@@ -179,6 +185,7 @@ namespace USBService
         {
             while (!shouldStopMonitoring)
             {
+                try { 
                 // You can add some delay here to avoid excessive CPU usage
                 Thread.Sleep(1000); // Wait for 1 second before checking for the next USB event
 
@@ -192,6 +199,16 @@ namespace USBService
                     AlwaysDisableUSBSTOR();
                 }
             }
+                catch (Exception ex)
+                {
+                    // Log the exception for debugging purposes
+                    Console.WriteLine("Error in MonitorUsbEvents: " + ex.Message);
+                }
+
+                // Introduce a delay to avoid excessive CPU usage
+                Thread.Sleep(1000);
+            }
+
         }
 
 
