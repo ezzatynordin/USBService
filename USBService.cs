@@ -1,102 +1,110 @@
 ﻿using System;
-using System.Diagnostics;
+using System.Data.SqlClient;
 using System.Management;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
+using System.Threading;
 using Microsoft.Win32;
 
 namespace USBService
 {
     public partial class USBService : ServiceBase
     {
-        // Counter to track the number of USB events
-        private static int eventCounter = 0;
+        private const string USBSTORKeyPath = @"SYSTEM\CurrentControlSet\Services\USBSTOR";
+        private const string StartValueName = "Start";
+        private const int DisableValue = 4; // 4 disables the USBSTOR service
+        private const string ConnectionString = "Data Source=F1-LAPTOP-MPC\\SQLEXPRESS;Initial Catalog=USB;Integrated Security=True;";
+        private const string AuthorizationQuery = "SELECT COUNT(*) FROM [USB].[dbo].[UsbDevices] WHERE DeviceID = @DeviceID";
+        private bool shouldStopMonitoring = false; // Flag to indicate when to stop the USB event monitoring
 
-        // Constants for DIF_PROPERTYCHANGE and DICS_PROPCHANGE
-        private const uint DIF_PROPERTYCHANGE = 0x00000012;
-
-        // USB event watcher
-        private ManagementEventWatcher watcher;
+        private ManagementEventWatcher usbWatcher;
+        private int eventCounter = 0; // Added to track USB events
+        private bool isUSBSTOREnabled = false; // Flag to track USBSTOR status
+        private string lastConnectedDeviceId = string.Empty; // To track the last connected USB device
+        private bool isConnected = false; // Class-level variable to track USB connection status
 
         public USBService()
         {
             InitializeComponent();
-            this.ServiceName = "USBService"; // Set the correct service name
+            ServiceName = "USBService";
         }
 
         protected override void OnStart(string[] args)
         {
-            // Register the USB event watcher to handle device connection and disconnection events
+            AlwaysDisableUSBSTOR();
             RegisterUsbEventWatcher();
+            // Start monitoring USB events
+            MonitorUsbEvents();
         }
 
         protected override void OnStop()
         {
-            // Stop the USB detection and access control logic
             StopUsbDetection();
-
-            // Unregister the USB event watcher
-            UnregisterUsbEventWatcher();
         }
 
-        #region USB Detection and Access Control
-
-        // Method to stop USB device detection and access control
-        private static void StopUsbDetection()
+        private void AlwaysDisableUSBSTOR()
         {
-            // Stop USB device detection and access control logic
-            // You can add any additional cleanup logic here if needed
-            Console.WriteLine("USB detection and access control logic stopped.");
+            isUSBSTOREnabled = false;
+            SetUSBSTORStartValue(DisableValue);
+            Console.WriteLine("USB storage devices disabled.");
         }
 
-        // Method to trigger a USB controller rescan
-        private static void TriggerUsbControllerRescan(string usbDeviceId)
+        private void EnableUSBSTOR()
+        {
+            isUSBSTOREnabled = true;
+            SetUSBSTORStartValue(3); // 3 enables the USBSTOR service
+            Console.WriteLine("USB storage devices enabled.");
+        }
+
+        private void EnableUSBSTORIfAuthorized(string deviceInstancePathId)
+        {
+            if (IsUSBAuthorized(deviceInstancePathId))
+            {
+                if (!isUSBSTOREnabled)
+                {
+                    EnableUSBSTOR();
+                }
+            }
+            else
+            {
+                if (isUSBSTOREnabled)
+                {
+                    AlwaysDisableUSBSTOR();
+                }
+            }
+        }
+
+        private void SetUSBSTORStartValue(int value)
         {
             try
             {
-                ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\CIMV2", $"SELECT * FROM Win32_PnPEntity WHERE DeviceID LIKE '%{usbDeviceId}%'");
-
-                foreach (ManagementObject queryObj in searcher.Get())
+                using (var key = Registry.LocalMachine.OpenSubKey(USBSTORKeyPath, true))
                 {
-                    SP_DEVINFO_DATA devInfoData = new SP_DEVINFO_DATA();
-                    devInfoData.cbSize = (uint)Marshal.SizeOf(devInfoData);
-
-                    // Get the device instance ID and pass it to the SetupDiCallClassInstaller function
-                    string deviceInstanceId = queryObj["DeviceID"].ToString();
-                    IntPtr ptr = Marshal.StringToHGlobalAuto(deviceInstanceId);
-                    bool result = SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, ptr, ref devInfoData);
-                    Marshal.FreeHGlobal(ptr);
-
-                    if (result)
+                    if (key != null)
                     {
-                        Console.WriteLine("USB controller rescan successful.");
+                        key.SetValue(StartValueName, value, RegistryValueKind.DWord);
                     }
                     else
                     {
-                        Console.WriteLine("Failed to trigger USB controller rescan.");
+                        Console.WriteLine("Error: Unable to access the USBSTOR registry key.");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Error while triggering USB controller rescan: " + ex.Message);
+                Console.WriteLine("Error: " + ex.Message);
             }
         }
 
-        #endregion
-
-        #region USB Event Watcher
-
-        // Method to register the USB event watcher
-        public void RegisterUsbEventWatcher()
+        private void RegisterUsbEventWatcher()
         {
             try
             {
                 ManagementScope scope = new ManagementScope("root\\CIMV2");
                 var query = new WqlEventQuery("SELECT * FROM Win32_DeviceChangeEvent");
-                watcher = new ManagementEventWatcher(scope, query);
-                watcher.EventArrived += UsbEventArrived;
-                watcher.Start();
+                usbWatcher = new ManagementEventWatcher(scope, query);
+                usbWatcher.EventArrived += UsbEventArrived;
+                usbWatcher.Start();
                 Console.WriteLine("USB event watcher registered.");
             }
             catch (Exception ex)
@@ -105,21 +113,26 @@ namespace USBService
             }
         }
 
-        // Method to unregister the USB event watcher
         private void UnregisterUsbEventWatcher()
         {
-            // Unregister the USB event watcher
-            if (watcher != null)
+            if (usbWatcher != null)
             {
-                watcher.EventArrived -= UsbEventArrived; // Remove the event handler
-                watcher.Stop(); // Stop the watcher
-                watcher.Dispose();
-                watcher = null;
+                usbWatcher.EventArrived -= UsbEventArrived;
+                usbWatcher.Stop();
+                usbWatcher.Dispose();
+                usbWatcher = null;
                 Console.WriteLine("USB event watcher unregistered.");
             }
         }
 
-        public void UsbEventArrived(object sender, EventArrivedEventArgs e)
+        private void StopUsbDetection()
+        {
+            // Stop monitoring USB events and exit the loop
+            shouldStopMonitoring = true;
+            Console.WriteLine("USB detection and access control logic stopped.");
+        }
+
+        private void UsbEventArrived(object sender, EventArrivedEventArgs e)
         {
             try
             {
@@ -130,25 +143,30 @@ namespace USBService
                 Console.WriteLine($"UsbEventArrived method called. Event Counter: {eventCounter}");
 
                 // Get the "TargetInstance" property data from the USB event
-                PropertyData targetInstanceData = e.NewEvent.Properties["TargetInstance"];
+                var targetInstanceData = e.NewEvent.Properties["TargetInstance"];
 
                 // Check if the property data is not null and is of type ManagementBaseObject
                 if (targetInstanceData != null && targetInstanceData.Value is ManagementBaseObject targetInstance)
                 {
                     // Explicitly cast to ManagementObject
-                    ManagementObject queryObj = (ManagementObject)targetInstance;
+                    var queryObj = (ManagementObject)targetInstance;
 
-                    string deviceId = queryObj.GetPropertyValue("DeviceID").ToString();
-                    bool isConnected = (int)queryObj.GetPropertyValue("ConfigManagerErrorCode") == 0;
+                    var deviceId = queryObj.GetPropertyValue("DeviceID").ToString();
+                    var isConnected = (int)queryObj.GetPropertyValue("ConfigManagerErrorCode") == 0;
 
-                    // Log the USB event details to the console
                     Console.WriteLine($"USB Event: DeviceID: {deviceId}, IsConnected: {isConnected}");
 
-                    // Log the USB event details to the Windows Event Viewer
-                    LogUsbEventToEventViewer(deviceId, isConnected);
+                    if (isConnected && deviceId != lastConnectedDeviceId)
+                    {
+                        EnableUSBSTORIfAuthorized(deviceId);
+                        lastConnectedDeviceId = deviceId; // Update the last connected device
+                    }
+                    else if (!isConnected)
+                    {
+                        AlwaysDisableUSBSTOR();
+                    }
 
-                    // Call the HandleUsbDeviceEvent method to handle the USB event
-                    HandleUsbDeviceEvent(deviceId, isConnected);
+                    RefreshRegistryEditor();
                 }
             }
             catch (Exception ex)
@@ -157,117 +175,80 @@ namespace USBService
             }
         }
 
-        // Method to log the USB event details to the Windows Event Viewer
-        private void LogUsbEventToEventViewer(string deviceId, bool isConnected)
+        private void MonitorUsbEvents()
         {
-            string eventSource = "USBService";
-            string eventLog = "Application";
-            string logMessage = $"USB Event: DeviceID: {deviceId}, IsConnected: {isConnected}";
-
-            try
+            while (!shouldStopMonitoring)
             {
-                if (!EventLog.SourceExists(eventSource))
-                {
-                    EventLog.CreateEventSource(eventSource, eventLog);
-                }
+                // You can add some delay here to avoid excessive CPU usage
+                Thread.Sleep(1000); // Wait for 1 second before checking for the next USB event
 
-                using (EventLog eventLogInstance = new EventLog(eventLog))
-                {
-                    eventLogInstance.Source = eventSource;
-                    eventLogInstance.WriteEntry(logMessage, EventLogEntryType.Information);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error while logging event to the Windows Event Viewer: " + ex.Message);
-            }
-        }
-
-
-        // Method to handle USB device events
-        public void HandleUsbDeviceEvent(string deviceInstancePath, bool isConnected)
-        {
-            try
-            {
+                // Check if USBSTOR should be enabled
                 if (isConnected)
                 {
-                    // Check if the device instance path is authorized in the database
-                    bool deviceFound = USBDeviceHelper.CheckDeviceInDatabase(deviceInstancePath);
-
-                    if (!deviceFound)
-                    {
-                        USBDeviceHelper.DisableUsbStorageDevices();
-                        Console.WriteLine("USB storage devices disabled.");
-
-                        // Log the unauthorized USB detection event to the Windows Event Viewer
-                        LogUnauthorizedUsbEvent(deviceInstancePath);
-                    }
-                    else
-                    {
-                        USBDeviceHelper.EnableUsbStorageDevices();
-                        Console.WriteLine("USB storage devices enabled.");
-                        // Allow the USB device to access the PC (not implemented here)
-                        Console.WriteLine("USB device allowed to access the PC.");
-                    }
+                    EnableUSBSTORIfAuthorized(lastConnectedDeviceId);
                 }
                 else
                 {
-                    // Handle the case when the USB device is disconnected
-                    USBDeviceHelper.EnableUsbStorageDevices(); // Disable USB storage devices when the authorized USB is disconnected
-                    Console.WriteLine("USB storage devices disabled.");
+                    AlwaysDisableUSBSTOR();
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error while handling USB device event: " + ex.Message);
             }
         }
 
 
-        // Method to log the unauthorized USB detection event to the Windows Event Viewer
-        private void LogUnauthorizedUsbEvent(string deviceId)
+        private bool IsUSBAuthorized(string deviceInstancePathId)
         {
-            string eventSource = "USBService";
-            string eventLog = "Application";
-            string logMessage = "Unauthorized USB device detected. Device ID: " + deviceId;
+            bool isAuthorized = false;
 
             try
             {
-                if (!EventLog.SourceExists(eventSource))
+                using (var connection = new SqlConnection(ConnectionString))
                 {
-                    EventLog.CreateEventSource(eventSource, eventLog);
-                }
-
-                using (EventLog eventLogInstance = new EventLog(eventLog))
-                {
-                    eventLogInstance.Source = eventSource;
-                    eventLogInstance.WriteEntry(logMessage, EventLogEntryType.Warning);
+                    connection.Open();
+                    using (var command = new SqlCommand(AuthorizationQuery, connection))
+                    {
+                        command.Parameters.AddWithValue("@DeviceID", deviceInstancePathId);
+                        var count = (int)command.ExecuteScalar();
+                        isAuthorized = count > 0;
+                    }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Error while logging event to the Windows Event Viewer: " + ex.Message);
+                Console.WriteLine("Error: " + ex.Message);
+            }
+
+            return isAuthorized;
+        }
+
+        private static IntPtr FindRegistryEditorWindow()
+        {
+            const string className = "RegEdit_RegEdit";
+            const string windowName = "Registry Editor";
+
+            return FindWindow(className, windowName);
+        }
+
+        private void RefreshRegistryEditor()
+        {
+            var registryEditorHandle = FindRegistryEditorWindow();
+            if (registryEditorHandle != IntPtr.Zero)
+            {
+                // Send the refresh message to the registry editor window
+                SendMessage(registryEditorHandle, WM_COMMAND, (IntPtr)ID_REFRESH, IntPtr.Zero);
+            }
+            else
+            {
+                Console.WriteLine("Registry Editor window not found. Unable to refresh.");
             }
         }
 
-        #endregion
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr FindWindow(string className, string windowName);
 
-        #region P/Invoke and Struct
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
-        // P/Invoke declaration for SetupDiCallClassInstaller function
-        [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        public static extern bool SetupDiCallClassInstaller(uint InstallFunction, IntPtr DeviceInfoSet, ref SP_DEVINFO_DATA DeviceInfoData);
-
-        // Struct for SP_DEVINFO_DATA required for the SetupDiCallClassInstaller function
-        [StructLayout(LayoutKind.Sequential)]
-        public struct SP_DEVINFO_DATA
-        {
-            public uint cbSize;
-            public Guid ClassGuid;
-            public uint DevInst;
-            public IntPtr Reserved;
-        }
-
-        #endregion
+        private const int WM_COMMAND = 0x0111;
+        private const int ID_REFRESH = 0x3028;
     }
 }
