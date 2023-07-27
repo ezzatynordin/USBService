@@ -1,19 +1,14 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Data.SqlClient;
+using System.Diagnostics;
 using System.Management;
-using Microsoft.Win32;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
-using System.Diagnostics;
+using Microsoft.Win32;
 
 namespace USBService
 {
     public partial class USBService : ServiceBase
     {
-        // Connection string for the database
-        const string ConnectionString = "Data Source=F1-LAPTOP-MPC\\SQLEXPRESS;Initial Catalog=USB;Integrated Security=True;";
-
         // Counter to track the number of USB events
         private static int eventCounter = 0;
 
@@ -30,10 +25,7 @@ namespace USBService
         }
 
         protected override void OnStart(string[] args)
-        { 
-            // Register for registry change events to automatically update Device Manager
-            RegisterRegistryChangeEvents();
-
+        {
             // Register the USB event watcher to handle device connection and disconnection events
             RegisterUsbEventWatcher();
         }
@@ -46,118 +38,15 @@ namespace USBService
             // Unregister the USB event watcher
             UnregisterUsbEventWatcher();
         }
+
         #region USB Detection and Access Control
 
-        
         // Method to stop USB device detection and access control
         private static void StopUsbDetection()
         {
             // Stop USB device detection and access control logic
             // You can add any additional cleanup logic here if needed
             Console.WriteLine("USB detection and access control logic stopped.");
-        }
-
-        // Method to get the USB mass storage device ID and instance path
-        public static string GetUsbDeviceId()
-        {
-            string deviceId = null;
-
-            try
-            {
-                // Implement USB device detection and retrieval here
-                // Use Win32_USBHub class to get USB mass storage devices
-                ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\CIMV2", "SELECT * FROM Win32_USBHub");
-
-                foreach (ManagementObject queryObj in searcher.Get())
-                {
-                    if (queryObj["Caption"] != null && queryObj["DeviceID"] != null)
-                    {
-                        string caption = queryObj["Caption"].ToString();
-                        string deviceID = queryObj["DeviceID"].ToString();
-
-                        // Check if the device is a USB mass storage device
-                        if (caption.Contains("USB Mass Storage"))
-                        {
-                            deviceId = deviceID;
-                            // Display the device ID to the console
-                            Console.WriteLine("USB mass storage device ID: " + deviceId);
-                            break; // For simplicity, just get the first USB mass storage device ID found
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error while retrieving USB mass storage device ID: " + ex.Message);
-            }
-
-            return deviceId;
-        }
-
-        // Method to check if the USB device is authorized in the database
-        public static bool CheckDeviceInDatabase(string deviceId)
-        {
-            using (SqlConnection connection = new SqlConnection(ConnectionString))
-            {
-                try
-                {
-                    connection.Open();
-
-                    // SQL command to check if the device ID exists in the database
-                    string sql = "SELECT COUNT(*) FROM [USB].[dbo].[UsbDevices] WHERE DeviceID = @DeviceID";
-
-                    using (SqlCommand command = new SqlCommand(sql, connection))
-                    {
-                        command.Parameters.AddWithValue("@DeviceID", deviceId);
-                        int count = (int)command.ExecuteScalar();
-
-                        return count > 0;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("Error while checking the database: " + ex.Message);
-                    return false;
-                }
-            }
-        }
-
-        // Method to enable USB storage devices
-        public static void EnableUsbStorageDevices()
-        {
-            try
-            {
-                // Set the registry key value to enable USB storage devices (set to 3)
-                string keyPath = @"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\USBSTOR";
-                Registry.SetValue(keyPath, "Start", 3, RegistryValueKind.DWord);
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                Console.WriteLine("Error: " + ex.Message);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error while enabling USB storage devices: " + ex.Message);
-            }
-        }
-
-        // Method to disable USB storage devices
-        public static void DisableUsbStorageDevices()
-        {
-            try
-            {
-                // Set the registry key value to disable USB storage devices (set to 4)
-                string keyPath = @"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\USBSTOR";
-                Registry.SetValue(keyPath, "Start", 4, RegistryValueKind.DWord);
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                Console.WriteLine("Error: " + ex.Message);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error while disabling USB storage devices: " + ex.Message);
-            }
         }
 
         // Method to trigger a USB controller rescan
@@ -240,19 +129,26 @@ namespace USBService
                 // Log a message when the method is called
                 Console.WriteLine($"UsbEventArrived method called. Event Counter: {eventCounter}");
 
+                // Get the "TargetInstance" property data from the USB event
                 PropertyData targetInstanceData = e.NewEvent.Properties["TargetInstance"];
+
+                // Check if the property data is not null and is of type ManagementBaseObject
                 if (targetInstanceData != null && targetInstanceData.Value is ManagementBaseObject targetInstance)
                 {
-                    string deviceId = targetInstance.GetPropertyValue("DeviceID").ToString();
-                    bool isConnected = (int)targetInstance.GetPropertyValue("ConfigManagerErrorCode") == 0;
+                    // Explicitly cast to ManagementObject
+                    ManagementObject queryObj = (ManagementObject)targetInstance;
 
-                    if (!string.IsNullOrEmpty(deviceId))
-                    {
-                        // Log the USB event details
-                        Console.WriteLine($"USB Event: DeviceID: {deviceId}, IsConnected: {isConnected}");
+                    string deviceId = queryObj.GetPropertyValue("DeviceID").ToString();
+                    bool isConnected = (int)queryObj.GetPropertyValue("ConfigManagerErrorCode") == 0;
 
-                        HandleUsbDeviceEvent(deviceId, isConnected);
-                    }
+                    // Log the USB event details to the console
+                    Console.WriteLine($"USB Event: DeviceID: {deviceId}, IsConnected: {isConnected}");
+
+                    // Log the USB event details to the Windows Event Viewer
+                    LogUsbEventToEventViewer(deviceId, isConnected);
+
+                    // Call the HandleUsbDeviceEvent method to handle the USB event
+                    HandleUsbDeviceEvent(deviceId, isConnected);
                 }
             }
             catch (Exception ex)
@@ -261,28 +157,54 @@ namespace USBService
             }
         }
 
+        // Method to log the USB event details to the Windows Event Viewer
+        private void LogUsbEventToEventViewer(string deviceId, bool isConnected)
+        {
+            string eventSource = "USBService";
+            string eventLog = "Application";
+            string logMessage = $"USB Event: DeviceID: {deviceId}, IsConnected: {isConnected}";
+
+            try
+            {
+                if (!EventLog.SourceExists(eventSource))
+                {
+                    EventLog.CreateEventSource(eventSource, eventLog);
+                }
+
+                using (EventLog eventLogInstance = new EventLog(eventLog))
+                {
+                    eventLogInstance.Source = eventSource;
+                    eventLogInstance.WriteEntry(logMessage, EventLogEntryType.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error while logging event to the Windows Event Viewer: " + ex.Message);
+            }
+        }
+
 
         // Method to handle USB device events
-        public void HandleUsbDeviceEvent(string deviceId, bool isConnected)
+        public void HandleUsbDeviceEvent(string deviceInstancePath, bool isConnected)
         {
             try
             {
                 if (isConnected)
                 {
-                    // Check if the device is authorized in the database
-                    bool deviceFound = CheckDeviceInDatabase(deviceId);
+                    // Check if the device instance path is authorized in the database
+                    bool deviceFound = USBDeviceHelper.CheckDeviceInDatabase(deviceInstancePath);
 
                     if (!deviceFound)
                     {
-                        DisableUsbStorageDevices();
+                        USBDeviceHelper.DisableUsbStorageDevices();
                         Console.WriteLine("USB storage devices disabled.");
 
                         // Log the unauthorized USB detection event to the Windows Event Viewer
-                        LogUnauthorizedUsbEvent(deviceId);
+                        LogUnauthorizedUsbEvent(deviceInstancePath);
                     }
                     else
                     {
-                        EnableUsbStorageDevices();
+                        USBDeviceHelper.EnableUsbStorageDevices();
                         Console.WriteLine("USB storage devices enabled.");
                         // Allow the USB device to access the PC (not implemented here)
                         Console.WriteLine("USB device allowed to access the PC.");
@@ -291,7 +213,7 @@ namespace USBService
                 else
                 {
                     // Handle the case when the USB device is disconnected
-                    EnableUsbStorageDevices(); // Disable USB storage devices when the authorized USB is disconnected
+                    USBDeviceHelper.EnableUsbStorageDevices(); // Disable USB storage devices when the authorized USB is disconnected
                     Console.WriteLine("USB storage devices disabled.");
                 }
             }
@@ -300,6 +222,7 @@ namespace USBService
                 Console.WriteLine("Error while handling USB device event: " + ex.Message);
             }
         }
+
 
         // Method to log the unauthorized USB detection event to the Windows Event Viewer
         private void LogUnauthorizedUsbEvent(string deviceId)
@@ -324,59 +247,6 @@ namespace USBService
             catch (Exception ex)
             {
                 Console.WriteLine("Error while logging event to the Windows Event Viewer: " + ex.Message);
-            }
-        }
-
-        #endregion
-
-        #region Registry Change Events
-
-        // Method to register for registry change events
-        public static void RegisterRegistryChangeEvents()
-        {
-            Microsoft.Win32.SystemEvents.UserPreferenceChanged += UsbStorageDevicesRegistryChanged;
-            Console.WriteLine("Registry change events registered.");
-        }
-
-
-        // Method to handle registry change event for USB storage devices
-        private static void UsbStorageDevicesRegistryChanged(object sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
-        {
-            try
-            {
-                // Check if the changed user preference is related to the registry
-                if (e.Category == Microsoft.Win32.UserPreferenceCategory.General)
-                {
-                    // Check if the change is related to the "Start" registry value of the "USBSTOR" service
-                    string usbStorKeyPath = @"SYSTEM\CurrentControlSet\Services\USBSTOR";
-                    RegistryKey usbStorKey = Registry.LocalMachine.OpenSubKey(usbStorKeyPath);
-
-                    if (usbStorKey != null)
-                    {
-                        int startValue = (int)usbStorKey.GetValue("Start", -1);
-
-                        // Check if the value is changed to 3 (enabled) or 4 (disabled)
-                        if (startValue == 3)
-                        {
-                            // USB storage devices are enabled
-                            // You can add additional logic here if needed
-                            Console.WriteLine("USB storage devices enabled.");
-                        }
-                        else if (startValue == 4)
-                        {
-                            // USB storage devices are disabled
-                            // You can add additional logic here if needed
-                            Console.WriteLine("USB storage devices disabled.");
-                        }
-
-                        // If you want to trigger the USB controller rescan here, you can call the method like this:
-                        // TriggerUsbControllerRescan(GetUsbDeviceId());
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error while handling USB storage devices registry change event: " + ex.Message);
             }
         }
 

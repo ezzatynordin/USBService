@@ -73,6 +73,7 @@
     <Compile Include="ProjectInstaller.Designer.cs">
       <DependentUpon>ProjectInstaller.cs</DependentUpon>
     </Compile>
+    <Compile Include="USBDeviceHelper.cs" />
     <Compile Include="USBService.cs">
       <SubType>Component</SubType>
     </Compile>
